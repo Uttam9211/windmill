@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "windmill"
+version = "0.0.1"
+authors = [
+    {name = "Abdiel Souza", email = "abdielcsouza@gmail.com"}
+]
+description = "A tiny library that offers support for event handling and messaging streams between multiple consumers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
