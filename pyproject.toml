@@ -13,3 +13,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
+
+[project.urls]
+homepage = "https://github.com/abdielsouza/windmill"
+repository = "https://github.com/abdielsouza/windmill"
