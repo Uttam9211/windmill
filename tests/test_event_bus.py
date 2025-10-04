@@ -1,5 +1,11 @@
 if __name__ == '__main__':
-    from src.windmill_lib.event_bus import EventBus, Event
+    import sys
+    import os
+
+    # adiciona o diretório src/ ao sys.path
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+    
+    from windmill_lib.event_bus import EventBus, Event
     import asyncio
 
     bus = EventBus()

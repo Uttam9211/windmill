@@ -4,27 +4,36 @@ import asyncio
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from .models import Event, Handler
+import re
 
 class EventBus:
+    """
+    The EventBus is the main entity of this library.
+    It handles events through associated listeners and
+    organizes the execution flow.
+    """
     def __init__(self) -> None:
         self._subscribers: Dict[str, List[Handler]] = {}
         self._lock = asyncio.Lock()
     
-    async def subscribe_async(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False) -> str:
-        h = Handler(neg_priority=-priority, callback=handler, once=once)
+    async def subscribe_async(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, max_retries: int = 0) -> str:
+        """Same of `subscribe`, but is asynchronous."""
+        h = Handler(neg_priority=-priority, callback=handler, once=once, max_retries=max_retries)
 
         async with self._lock:
             self._subscribers.setdefault(topic, []).append(h)
         
         return h.identifier
     
-    def subscribe(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False) -> str:
-        h = Handler(neg_priority=-priority, callback=handler, once=once)
+    def subscribe(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, max_retries: int = 0) -> str:
+        """Subscribes a listener to an event/topic. When the event is published, the listener is executed."""
+        h = Handler(neg_priority=-priority, callback=handler, once=once, max_retries=max_retries)
         self._subscribers.setdefault(topic, []).append(h)
         
         return h.identifier
     
     async def unsubscribe_async(self, topic: str, handler_id: str) -> bool:
+        """Same of `unsubscribe`, but is asynchronous."""
         async with self._lock:
             handlers = self._subscribers.get(topic)
 
@@ -40,6 +49,7 @@ class EventBus:
             return len(handlers) != before
         
     def unsubscribe(self, topic: str, handler_id: str) -> bool:
+        """Removes a listener from a topic."""
         handlers = self._subscribers.get(topic)
 
         if not handlers:
@@ -53,69 +63,84 @@ class EventBus:
         
         return len(handlers) != before
     
-    def on(self, topic: str, *, priority: int = 0, once: bool = False) -> Callable[[Callable[[Event], Any]], Callable[[Event], Any]]:
-        def decorator(fn: Callable[[Event], Any]):
-            self.subscribe(topic, fn, priority=priority, once=once)
+    def on(self, topic: str, *, priority: int = 0, once: bool = False, max_retries: int = 0) -> Callable[[Callable[[Event], Any]], Callable[[Event], Any]]:
+        """Decorator to help creating listeners. It does the same as `subscribe`, but in an easier way."""
+        def decorator(fn: Callable[[Event], Any]) -> Callable[[Event], Any]:
+            self.subscribe(topic, fn, priority=priority, once=once, max_retries=max_retries)
             return fn
-        
         return decorator
-    
+            
     async def publish_async(self, topic: str, payload: Any = None, *, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Same of `publish`, but is asynchronous."""
         event = Event(topic=topic, payload=payload, metadata=metadata or {})
 
         async with self._lock:
-            handlers = list(self._subscribers.get(topic, []))
+            handlers = self._find_handlers(topic)
         
         if not handlers:
             return
         
-        handlers.sort()
-        loop = asyncio.get_running_loop()
         to_remove: List[str] = []
 
         for h in handlers:
-            cb = h.callback
+            await self._execute_handler(h, event)
 
-            try:
-                if inspect.iscoroutinefunction(cb):
-                    await cb(event)
-                else:
-                    await loop.run_in_executor(None, cb, event)
-            except Exception:
-                import traceback
-                traceback.print_exc()
-            finally:
-                if h.once:
-                    to_remove.append(h.identifier)
-        
+            if h.once:
+                to_remove.append((topic, h.identifier))
+            
         if to_remove:
             async with self._lock:
-                current = self._subscribers.get(topic, [])
-                current[:] = [h for h in current if h.identifier not in to_remove]
-
-                if not current:
-                    self._subscribers.pop(topic, None)
+                for t, hid in to_remove:
+                    hs = self._subscribers.get(t, [])
+                    self._subscribers[t] = [x for x in hs if x.identifier != hid]
 
     def publish(self, topic: str, payload: Any = None, *, metadata: Optional[Dict[str, Any]] = None) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        
-        if loop is not None and loop.is_running():
-            raise RuntimeError("synchronous publish cannot be called from a running asyncio event loop.")
-        
+        """Publishes an event. All the associated listeners will be executed."""
         asyncio.run(self.publish_async(topic, payload, metadata=metadata))
     
-    def list_subscribers(self, topic: Optional[str] = None) -> Dict[str, List[Tuple[str, int, bool]]]:
-        out: Dict[str, List[Tuple[str, int, bool]]] = {}
-
-        for t, handlers in self._subscribers.items():
-            if topic is not None and t != topic:
-                continue
-            out[t] = [(h.identifier, h.priority, h.once) for h in handlers]
-        
-        return out
+    def list_subscribers(self) -> Dict[str, List[Tuple[str, int, bool, int]]]:
+        return {t: [(h.identifier, h.priority, h.once, h.max_retries) for h in hs] for t, hs in self._subscribers.items()}
     
     def clear(self) -> None:
         self._subscribers.clear()
+
+    @staticmethod
+    def _match_topic(pattern: str, topic: str) -> bool:
+        regex_pattern = re.escape(pattern)
+        regex_pattern = regex_pattern.replace(r"\*", "[^.]+")
+        regex_pattern = regex_pattern.replace(r"\#", ".*")
+        regex_pattern = f"^{regex_pattern}$"
+        return re.match(regex_pattern, topic) is not None
+    
+    def _find_handlers(self, topic: str) -> List[Handler]:
+        handlers: List[Handler] = []
+        for pattern, hs in self._subscribers.items():
+            if self._match_topic(pattern, topic):
+                handlers.extend(hs)
+            
+        handlers.sort()
+        return handlers
+    
+    async def _execute_handler(self, handler: Handler, event: Event) -> None:
+        retries = 0
+        backoff_base = 0.2
+
+        while True:
+            try:
+                if inspect.iscoroutinefunction(handler.callback):
+                    await handler.callback(event)
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, handler.callback, event)
+                break
+            except Exception as e:
+                retries += 1
+                if retries > handler.max_retries:
+                    await self.publish_async('dead.letter', {
+                        'original_topic': event.topic,
+                        'event_id': event.identifier,
+                        'payload': event.payload,
+                        'error': str(e),
+                    })
+                    break
+                await asyncio.sleep(backoff_base * (2 ** (retries - 1)))

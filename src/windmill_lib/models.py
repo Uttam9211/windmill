@@ -27,6 +27,7 @@ class Handler:
     neg_priority: int
     callback: Callable[[Event], Any] = field(compare=False)
     once: bool = field(default=False, compare=False)
+    max_retries: int = field(default=0, compare=False)
     identifier: str = field(default_factory=lambda: str(uuid.uuid4()), compare=False)
 
     @property

@@ -113,8 +113,8 @@ Hello, Max! Executed only once and nevermore.
 
 ---
 ## Todos:
-- [ ] Wildcard topics
-- [ ] Retry/Backoff and DLQ
+- [X] Wildcard topics
+- [X] Retry/Backoff and DLQ
 - [ ] Write unit tests
 - [ ] Roles and permissions
 - [ ] Payload validation
