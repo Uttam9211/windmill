@@ -50,6 +50,67 @@ The expected output for the code above is:
 Hello world, Bob!
 ```
 
+### Async support
+You can also create **async listeners** and publish events using asynchronous mode:
+
+```python
+import asyncio
+
+@bus.on('greet')
+async def hello_async(event: Event):
+    await asyncio.sleep(1.0)
+    print(f"Hello world, {event.payload}!")
+
+bus.publish('greet', 'Max')
+```
+Publishing with asynchronous functions:
+```python
+async def main():
+    await bus.publish_async('greet', 'Caroline')
+    await bus.publish_async('greet', 'Daniel')
+
+asyncio.run(main())
+```
+
+### Priority parameter
+Listeners can also have **priority level** and may be executed in
+different orders according to its priority. Higher priority grants
+earlier execution.
+
+```python
+@bus.on('greet', priority=2)
+def hello_first(event: Event):
+    print(f"Hello world, {event.payload}! I am first.")
+
+@bus.on('greet', priority=1)
+def hello_second(event: Event):
+    print(f"Hello world, {event.payload}! I am second.")
+
+bus.publish('greet', 'Max')
+```
+This will generate the following output:
+```
+Hello world, Max! I am first.
+Hello world, Max! I am second.
+```
+
+### "once" parameter
+You can setup a listener to be executed only once before its deletion:
+
+```python
+@bus.on('greet', once=True)
+def hello_once(event: Event):
+    print(f"Hello, {event.payload}! Executed only once and nevermore.")
+
+bus.publish('greet', 'Max')
+bus.publish('greet', 'Bob')
+```
+
+This will result in the following output:
+```
+Hello, Max! Executed only once and nevermore.
+```
+
 ---
 ## Todos:
 - [ ] Wildcard topics
@@ -59,3 +120,4 @@ Hello world, Bob!
 - [ ] Payload validation
 - [ ] Data persistence (json, db, etc.)
 - [ ] Metrics and tracing system
+- [ ] Support for object-oriented listeners
