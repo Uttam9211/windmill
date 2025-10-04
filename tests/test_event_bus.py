@@ -1,5 +1,5 @@
 if __name__ == '__main__':
-    from src.windmill_project.event_bus import EventBus, Event
+    from src.windmill_lib.event_bus import EventBus, Event
     import asyncio
 
     bus = EventBus()

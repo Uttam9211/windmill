@@ -3,7 +3,7 @@ requires = ["hatchling >= 1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "windmill_project"
+name = "windmill_lib"
 version = "0.0.1"
 authors = [
     {name = "Abdiel Souza", email = "abdielcsouza@gmail.com"}

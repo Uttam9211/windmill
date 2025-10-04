@@ -23,7 +23,7 @@ This project currently supports the following features:
 ## How to install
 You can install the library through `pip install` command:
 ```bash
-pip install windmill
+pip install windmill-lib
 ```
 
 ---
