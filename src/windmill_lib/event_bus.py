@@ -14,6 +14,7 @@ class EventBus:
     """
     def __init__(self) -> None:
         self._subscribers: Dict[str, List[Handler]] = {}
+        self._static_susbcribers_map: Dict[str, Event] = {}
         self._lock = asyncio.Lock()
     
     async def subscribe_async(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, max_retries: int = 0) -> str:
@@ -25,9 +26,9 @@ class EventBus:
         
         return h.identifier
     
-    def subscribe(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, max_retries: int = 0) -> str:
+    def subscribe(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, static: bool = False, max_retries: int = 0) -> str:
         """Subscribes a listener to an event/topic. When the event is published, the listener is executed."""
-        h = Handler(neg_priority=-priority, callback=handler, once=once, max_retries=max_retries)
+        h = Handler(neg_priority=-priority, callback=handler, once=once, static=static, max_retries=max_retries)
         self._subscribers.setdefault(topic, []).append(h)
         
         return h.identifier
@@ -63,11 +64,21 @@ class EventBus:
         
         return len(handlers) != before
     
-    def on(self, topic: str, *, priority: int = 0, once: bool = False, max_retries: int = 0) -> Callable[[Callable[[Event], Any]], Callable[[Event], Any]]:
+    def on(
+        self,
+        topic: str,
+        *,
+        priority: int = 0,
+        once: bool = False,
+        static: bool = False,
+        max_retries: int = 0
+    ) -> Callable[[Callable[[Event], Any]], Callable[[Event], Any]]:
         """Decorator to help creating listeners. It does the same as `subscribe`, but in an easier way."""
+        
         def decorator(fn: Callable[[Event], Any]) -> Callable[[Event], Any]:
-            self.subscribe(topic, fn, priority=priority, once=once, max_retries=max_retries)
+            self.subscribe(topic, fn, priority=priority, once=once, static=static, max_retries=max_retries)
             return fn
+        
         return decorator
             
     async def publish_async(self, topic: str, payload: Any = None, *, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -83,6 +94,13 @@ class EventBus:
         to_remove: List[str] = []
 
         for h in handlers:
+            if h.static:
+                if not h.identifier in self._static_susbcribers_map.keys():
+                    self._static_susbcribers_map[h.identifier] = event
+                else:
+                    if self._static_susbcribers_map[h.identifier].payload == event.payload:
+                        continue
+
             await self._execute_handler(h, event)
 
             if h.once:
