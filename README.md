@@ -107,8 +107,32 @@ bus.publish('greet', 'Bob')
 ```
 
 This will result in the following output:
+
 ```
 Hello, Max! Executed only once and nevermore.
+```
+
+### "static" parameter
+You can also create **static listeners**. These listeners save a state with the last payload received.
+If the current payload is equivalent to the last payload, the listener will not be executed.
+
+```python
+bus = EventBus()
+
+@bus.on('greet', static=True)
+def hello(event: Event):
+    print(f"Hello, {event.payload}!")
+
+bus.publish('greet', 'Max')
+bus.publish('greet', 'Max') # this shouldn't be printed.
+bus.publish('greet', 'Bob')
+```
+
+The output will be:
+
+```
+Hello, Max!
+Hello, Bob!
 ```
 
 ---
