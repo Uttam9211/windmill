@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from .models import Event, Handler
+from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
+from .models import Event, Handler, Middleware, MiddlewareEntry
 import re
 
 class EventBus:
@@ -15,7 +15,11 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: Dict[str, List[Handler]] = {}
         self._static_susbcribers_map: Dict[str, Event] = {}
+        self._middlewares: List[MiddlewareEntry] = []
         self._lock = asyncio.Lock()
+
+    def use(self, middleware: Middleware, topics: list[str] = []) -> None:
+        self._middlewares.append(MiddlewareEntry(middleware, topics))
     
     async def subscribe_async(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, max_retries: int = 0) -> str:
         """Same of `subscribe`, but is asynchronous."""
@@ -26,10 +30,21 @@ class EventBus:
         
         return h.identifier
     
-    def subscribe(self, topic: str, handler: Callable[[Event], Any], *, priority: int = 0, once: bool = False, static: bool = False, max_retries: int = 0) -> str:
+    def subscribe(
+        self,
+        topic: str,
+        handler: Callable[[Event], Any],
+        *,
+        priority: int = 0,
+        once: bool = False,
+        static: bool = False,
+        filter_fn: Optional[Callable[[Event], bool]] = None,
+        max_retries: int = 0
+    ) -> str:
         """Subscribes a listener to an event/topic. When the event is published, the listener is executed."""
-        h = Handler(neg_priority=-priority, callback=handler, once=once, static=static, max_retries=max_retries)
+        h = Handler(neg_priority=-priority, callback=handler, once=once, static=static, filter_fn=filter_fn, max_retries=max_retries)
         self._subscribers.setdefault(topic, []).append(h)
+        self._subscribers[topic].sort(key=lambda h: h.priority, reverse=True)
         
         return h.identifier
     
@@ -71,12 +86,13 @@ class EventBus:
         priority: int = 0,
         once: bool = False,
         static: bool = False,
+        filter_fn: Optional[Callable[[Event], bool]] = None,
         max_retries: int = 0
     ) -> Callable[[Callable[[Event], Any]], Callable[[Event], Any]]:
         """Decorator to help creating listeners. It does the same as `subscribe`, but in an easier way."""
         
         def decorator(fn: Callable[[Event], Any]) -> Callable[[Event], Any]:
-            self.subscribe(topic, fn, priority=priority, once=once, static=static, max_retries=max_retries)
+            self.subscribe(topic, fn, priority=priority, once=once, static=static, filter_fn=filter_fn, max_retries=max_retries)
             return fn
         
         return decorator
@@ -91,26 +107,32 @@ class EventBus:
         if not handlers:
             return
         
-        to_remove: List[str] = []
+        async def final_handler(ev: Event):
+            to_remove: List[str] = []
 
-        for h in handlers:
-            if h.static:
-                if not h.identifier in self._static_susbcribers_map.keys():
-                    self._static_susbcribers_map[h.identifier] = event
-                else:
-                    if self._static_susbcribers_map[h.identifier].payload == event.payload:
-                        continue
+            for h in handlers:
+                if h.filter_fn and not h.filter_fn(event):
+                    continue
 
-            await self._execute_handler(h, event)
+                if h.static:
+                    if not h.identifier in self._static_susbcribers_map.keys():
+                        self._static_susbcribers_map[h.identifier] = ev
+                    else:
+                        if self._static_susbcribers_map[h.identifier].payload == ev.payload:
+                            continue
 
-            if h.once:
-                to_remove.append((topic, h.identifier))
-            
-        if to_remove:
-            async with self._lock:
-                for t, hid in to_remove:
-                    hs = self._subscribers.get(t, [])
-                    self._subscribers[t] = [x for x in hs if x.identifier != hid]
+                await self._execute_handler(h, event)
+
+                if h.once:
+                    to_remove.append((topic, h.identifier))
+                
+            if to_remove:
+                async with self._lock:
+                    for t, hid in to_remove:
+                        hs = self._subscribers.get(t, [])
+                        self._subscribers[t] = [x for x in hs if x.identifier != hid]
+        
+        await self._run_middlewares(event, final_handler)
 
     def publish(self, topic: str, payload: Any = None, *, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Publishes an event. All the associated listeners will be executed."""
@@ -162,3 +184,22 @@ class EventBus:
                     })
                     break
                 await asyncio.sleep(backoff_base * (2 ** (retries - 1)))
+
+    async def _run_middlewares(self, event: Event, final_handler: Callable[[Event], Awaitable[None]]):
+        """Executa a cadeia de middlewares, terminando no handler final."""
+        applicable = [mw.middleware for mw in self._middlewares if mw.matches(event.topic)]
+        
+        async def _build_chain(index: int) -> Callable[[Event], Awaitable[None]]:
+            if index == len(applicable):
+                return final_handler
+            
+            mw = applicable[index]
+
+            async def _next(ev: Event):
+                next_in_chain = await _build_chain(index + 1)
+                await mw(ev, next_in_chain)
+            
+            return _next
+        
+        chain = await _build_chain(0)
+        await chain(event)
